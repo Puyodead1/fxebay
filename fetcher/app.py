@@ -15,6 +15,7 @@ import json
 import os
 import re
 import time
+from html import escape
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 from curl_cffi import requests
@@ -50,6 +51,19 @@ def fetch_ebay(url: str, allow_redirects=True):
     return last
 
 
+def page_signals(html: str) -> dict:
+    """Buy-box markers; must match pageSignals() in worker/src/index.js."""
+    bids = re.search(r'"bidCount":(\d+)', html)
+    end = re.search(r'"endDate":\{"value":"([^"]+)"', html)
+    return {
+        "auction": "x-bid-action" in html,
+        "bin": "x-bin-action" in html,
+        "offer": "x-offer-action" in html,
+        "bidCount": int(bids.group(1)) if bids else None,
+        "endDate": end.group(1) if end else None,
+    }
+
+
 def trim(html: str) -> str:
     title = re.search(r"<title>([^<]*)", html)
     metas = [
@@ -57,9 +71,11 @@ def trim(html: str) -> str:
         if '\\"' not in m and re.search(r"og:|twitter:", m)
     ]
     lds = re.findall(r"<script[^>]+application/ld\+json[^>]*>[\s\S]*?</script>", html)
+    signals = escape(json.dumps(page_signals(html)), quote=True)
     return (
         "<!doctype html><html><head>\n"
         f"<title>{title.group(1) if title else ''}</title>\n"
+        f'<meta name="fxebay:signals" content="{signals}">\n'
         + "\n".join(metas) + "\n" + "\n".join(lds)
         + "\n</head><body></body></html>\n"
     )

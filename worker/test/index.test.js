@@ -3,8 +3,10 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import worker, { extractItemId } from "../src/index.js";
 
-// Trimmed copy of a real eBay listing page (meta tags + JSON-LD only).
-const realHtml = readFileSync(new URL("./fixture-item.html", import.meta.url), "utf8");
+// Real eBay listing pages, trimmed by fetcher/app.py (meta tags + JSON-LD + fxebay:signals).
+const fixture = (name) => readFileSync(new URL(`./fixture-${name}.html`, import.meta.url), "utf8");
+const realHtml = fixture("item"); // Buy It Now
+const pages = { "198718772370": fixture("auction"), "198737515317": fixture("bo") };
 
 const apiItem = {
   title: "Nintendo Game Boy Color - Teal - Tested & Working",
@@ -43,7 +45,7 @@ globalThis.fetch = async (u) => {
       ? new Response("<title>Error Page | eBay</title>", { status: 403 })
       : new Response(realHtml);
   }
-  if (u.startsWith("https://fetcher.test/item/")) return new Response(realHtml);
+  if (u.startsWith("https://fetcher.test/item/")) return new Response(pages[u.split("/").pop()] || realHtml);
   if (u.startsWith("https://fetcher.test/short/")) return json({ location: "https://www.ebay.com/itm/555555555555?mkcid=16" });
   if (u.startsWith("https://ebay.us/") && mode === "blocked") return new Response("", { status: 403 });
   if (u.startsWith("https://ebay.us/")) {
@@ -67,8 +69,7 @@ test("fixed price listing via Browse API", async () => {
   const { res, body } = await get("/itm/117298301199");
   assert.equal(res.status, 200);
   assert.equal(meta(body, "og:title"), "Nintendo Game Boy Color - Teal - Tested &amp; Working");
-  const desc = meta(body, "og:description");
-  assert.match(desc, /^💲 \$89\.99\nUsed · Free shipping\n📍 Austin, Texas, US\n\nFully tested, new screen, cleaned contacts\.$/);
+  assert.equal(meta(body, "og:description"), "Type: Buy It Now\nCondition: Used\nPrice: $89.99\nShipping: Free");
   assert.equal(meta(body, "og:image"), "https://i.ebayimg.com/images/g/abc/s-l1600.jpg");
   assert.equal(meta(body, "twitter:card"), "summary_large_image");
   assert.match(body, /oembed\.json\?[^"]*author=retro_shop/);
@@ -76,20 +77,21 @@ test("fixed price listing via Browse API", async () => {
 
 test("auction with slug URL", async () => {
   const { body } = await get("/itm/Some-Title-Here/117298301199?hash=item1b4", { m: "auction" });
-  assert.match(meta(body, "og:description"), /💲 \$41\.00 · 🔨 1 bid · Buy It Now \$89\.99/);
-  assert.match(meta(body, "og:description"), /⏰ Ends Sun, 25 Oct 2026 18:00 UTC/);
+  assert.equal(
+    meta(body, "og:description"),
+    "Type: Auction + Buy It Now (1 bid, ends Oct 25, 6:00 PM UTC)\nCondition: Used\nCurrent bid: $41.00\nBuy It Now: $89.99\nShipping: Free",
+  );
 });
 
 test("variation listing shows price range", async () => {
   const { body } = await get("/itm/117298301199", { m: "group" });
-  assert.match(meta(body, "og:description"), /\$89\.99 – \$120\.00/);
-  assert.match(meta(body, "og:description"), /2 variations/);
+  assert.match(meta(body, "og:description"), /\nPrice: \$89\.99 – \$120\.00\nVariations: 2\n/);
 });
 
 test("scrape fallback parses a real eBay page", async () => {
   const { body } = await get("/itm/117298301199", { env: {}, m: "scrape" });
   assert.equal(meta(body, "og:title"), "Commercial Service Sed De Saber Construction Edition Leap pad Spanish Leapfrog");
-  assert.match(meta(body, "og:description"), /^💲 \$24\.99\nNew · \+\$16\.92 shipping/);
+  assert.equal(meta(body, "og:description"), "Type: Buy It Now\nCondition: New\nPrice: $24.99\nShipping: $16.92");
   assert.match(meta(body, "og:image"), /s-l1600\.jpg$/);
   assert.ok(!calls.some((c) => c.includes("api.ebay.com")), "should not call API without keys");
 });
@@ -103,9 +105,26 @@ test("fetcher is used when there are no API keys", async () => {
   assert.ok(!calls.some((c) => c.startsWith("https://www.ebay.com/")), "no direct scrape when fetcher works");
 });
 
+test("real auction page via fetcher", async () => {
+  const { body } = await get("/itm/198718772370", { env: fetcherEnv });
+  assert.match(
+    meta(body, "og:description"),
+    /^Type: Auction or Best Offer \(0 bids, ends Oct 23, 4:40 AM UTC\)\nCondition: Used\nCurrent bid: \$147\.44(\n|$)/,
+  );
+});
+
+test("real Buy It Now + Best Offer page via fetcher", async () => {
+  const { body } = await get("/itm/198737515317", { env: fetcherEnv });
+  assert.match(meta(body, "og:description"), /^Type: Buy It Now or Best Offer\nCondition: Used\nPrice: \$64\.99(\n|$)/);
+  // the page's JSON-LD title already contains "&amp;"; it must not be double-escaped
+  assert.equal(meta(body, "og:title"), "Vintage Nintendo Game Boy Color - Teal (CGB-001) - Tested &amp; Working");
+});
+
 test("short link falls back to fetcher when ebay.us blocks the worker", async () => {
   const { body } = await get("/m/AbCdEf12", { env: fetcherEnv, m: "blocked" });
-  assert.equal(meta(body, "og:url"), "https://www.ebay.com/itm/555555555555");
+  assert.ok(calls.includes("https://fetcher.test/short/m/AbCdEf12"));
+  assert.ok(calls.includes("https://fetcher.test/item/555555555555"));
+  assert.match(meta(body, "og:title"), /^Commercial Service/);
 });
 
 test("blocked everywhere still returns a minimal embed", async () => {
@@ -117,14 +136,35 @@ test("blocked everywhere still returns a minimal embed", async () => {
 
 test("ebay.us short link resolves", async () => {
   const { body } = await get("/m/AbCdEf12");
-  assert.equal(meta(body, "og:url"), "https://www.ebay.com/itm/117298301199");
+  assert.ok(calls.some((c) => c.includes("legacy_item_id=117298301199")));
+  assert.equal(meta(body, "og:url"), "https://ebay.us/m/AbCdEf12");
 });
 
-test("humans are redirected to eBay", async () => {
-  const { res } = await get("/itm/117298301199", { ua: "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:158.0) Gecko/20100101 Firefox/158.0" });
+const FIREFOX = "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:158.0) Gecko/20100101 Firefox/158.0";
+
+test("humans go to the exact original link", async () => {
+  const { res } = await get("/itm/Cool-Shoes/117298301199?var=4242&_skw=shoes", { ua: FIREFOX });
   assert.equal(res.status, 302);
-  assert.equal(res.headers.get("location"), "https://www.ebay.com/itm/117298301199");
-  assert.equal(calls.length, 0);
+  assert.equal(res.headers.get("location"), "https://www.ebay.com/itm/Cool-Shoes/117298301199?var=4242&_skw=shoes");
+  const short = await get("/m/AbCdEf12", { ua: FIREFOX });
+  assert.equal(short.res.headers.get("location"), "https://ebay.us/m/AbCdEf12");
+  const bare = await get("/117298301199", { ua: FIREFOX });
+  assert.equal(bare.res.headers.get("location"), "https://www.ebay.com/itm/117298301199");
+  assert.equal(calls.length, 0, "redirects need no lookups");
+});
+
+test("embed links back to the original link", async () => {
+  // ?embed forces the embed page in a browser; it must not leak into the link
+  const { body } = await get("/itm/Cool-Shoes/117298301199?var=4242&embed", { ua: FIREFOX });
+  const original = "https://www.ebay.com/itm/Cool-Shoes/117298301199?var=4242";
+  assert.equal(meta(body, "og:url"), original);
+  assert.ok(body.includes(`<a href="${original}">`));
+  assert.ok(body.includes(`url=${encodeURIComponent(original)}`), "oEmbed points at original");
+});
+
+test("malformed escapes don't crash", async () => {
+  const { res } = await get("/itm/%E0%A4%A/117298301199");
+  assert.equal(res.status, 200);
 });
 
 test("bad path is a 400", async () => {

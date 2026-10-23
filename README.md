@@ -1,8 +1,9 @@
 # fxebay
 
 Like fxtwitter, but for eBay. Discord shows no embed for eBay links because eBay
-blocks Discord's crawler. Swap the domain and you get a proper embed (title, price,
-bids, condition, shipping, location, photo), and clicking still takes you to eBay.
+blocks Discord's crawler. Swap the domain and you get a proper embed (title, listing
+type, condition, price or current bid, shipping, photo), and clicking takes you to the
+exact eBay link that was shared.
 
 ```
 https://www.ebay.com/itm/117298301199

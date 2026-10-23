@@ -21,18 +21,24 @@ export default {
     if (path === "/oembed.json") return oembed(url);
     if (path === "/favicon.ico" || path === "/robots.txt") return new Response(null, { status: 404 });
 
+    const shortCode = matchShortCode(url.pathname);
+    if (!shortCode && !extractItemId(url.pathname + url.search)) {
+      return text("No eBay item ID found in that URL.", 400);
+    }
+
+    // Everything points back at the exact link that was shared (variation, query string, short link).
+    const ebayUrl = originalEbayUrl(url, shortCode);
+    const ua = request.headers.get("user-agent") || "";
+    const forceEmbed = url.searchParams.has("embed");
+    if (!BOT_UA.test(ua) && !forceEmbed) return Response.redirect(ebayUrl, 302);
+
     let itemId;
     try {
-      itemId = await resolveItemId(url, env);
+      itemId = await resolveItemId(url, shortCode, env);
     } catch (e) {
       return text(`Couldn't resolve that link: ${e.message}`, 400);
     }
     if (!itemId) return text("No eBay item ID found in that URL.", 400);
-
-    const ebayUrl = `https://www.ebay.com/itm/${itemId}`;
-    const ua = request.headers.get("user-agent") || "";
-    const forceEmbed = url.searchParams.has("embed");
-    if (!BOT_UA.test(ua) && !forceEmbed) return Response.redirect(ebayUrl, 302);
 
     let item;
     try {
@@ -40,9 +46,9 @@ export default {
     } catch (e) {
       console.log(`item ${itemId} failed: ${e.message}`);
     }
-    if (!item) {
-      item = { id: itemId, title: `eBay item ${itemId}`, url: ebayUrl, description: "Couldn't load listing details." };
-    }
+    item = item
+      ? { ...item, url: ebayUrl }
+      : { id: itemId, title: `eBay item ${itemId}`, url: ebayUrl, note: "Couldn't load listing details." };
 
     return new Response(renderEmbed(item, url.origin), {
       headers: {
@@ -55,13 +61,32 @@ export default {
 
 // ---------- URL handling ----------
 
-async function resolveItemId(url, env) {
-  const path = decodeURIComponent(url.pathname);
+// ebay.us short links: https://ebay.us/m/AbC123 -> /m/AbC123 (or /AbC123)
+function safeDecode(s) {
+  try {
+    return decodeURIComponent(s);
+  } catch {
+    return s;
+  }
+}
 
-  // ebay.us short links: https://ebay.us/m/AbC123 -> /m/AbC123 (or /AbC123)
-  const short = path.match(/^\/(m\/)?([A-Za-z0-9]{4,12})\/?$/);
-  if (short && !/^\d+$/.test(short[2])) {
-    const code = `${short[1] || ""}${short[2]}`;
+function matchShortCode(pathname) {
+  const short = safeDecode(pathname).match(/^\/(m\/)?([A-Za-z0-9]{4,12})\/?$/);
+  return short && !/^\d+$/.test(short[2]) ? `${short[1] || ""}${short[2]}` : null;
+}
+
+export function originalEbayUrl(url, shortCode = matchShortCode(url.pathname)) {
+  const params = new URLSearchParams(url.search);
+  params.delete("embed");
+  const qs = params.toString() ? `?${params}` : "";
+  if (shortCode) return `https://ebay.us/${shortCode}${qs}`;
+  const bare = url.pathname.match(/^\/(\d{9,15})\/?$/);
+  if (bare) return `https://www.ebay.com/itm/${bare[1]}${qs}`;
+  return `https://www.ebay.com${url.pathname}${qs}`;
+}
+
+async function resolveItemId(url, code, env) {
+  if (code) {
     const res = await fetch(`https://ebay.us/${code}`, { redirect: "manual" });
     let loc = res.headers.get("location");
     if (!loc && env.FETCHER_URL) {
@@ -72,7 +97,7 @@ async function resolveItemId(url, env) {
     return extractItemId(loc);
   }
 
-  return extractItemId(path + url.search);
+  return extractItemId(safeDecode(url.pathname) + url.search);
 }
 
 export function extractItemId(s) {
@@ -88,7 +113,8 @@ export function extractItemId(s) {
 
 async function getItem(itemId, env, ctx, origin) {
   const cache = typeof caches !== "undefined" ? caches.default : null;
-  const cacheKey = new Request(`${origin}/__cache/item/${itemId}`);
+  // Bump the version whenever the cached item shape changes.
+  const cacheKey = new Request(`${origin}/__cache/v2/item/${itemId}`);
   if (cache) {
     try {
       const hit = await cache.match(cacheKey);
@@ -169,29 +195,48 @@ async function fromBrowseApi(itemId, env) {
 }
 
 export function normalizeApiItem(d, itemId) {
-  const auction = (d.buyingOptions || []).includes("AUCTION");
+  const opts = d.buyingOptions || [];
+  const auction = opts.includes("AUCTION");
+  const bin = opts.includes("FIXED_PRICE");
   const priceObj = auction && d.currentBidPrice ? d.currentBidPrice : d.price;
   const ship = d.shippingOptions?.[0]?.shippingCost;
-  const loc = d.itemLocation;
   const images = [d.image?.imageUrl, ...(d.additionalImages || []).map((i) => i.imageUrl)].filter(Boolean);
 
   return {
     id: itemId,
     url: `https://www.ebay.com/itm/${itemId}`,
     title: d.title,
+    type: listingType(auction, bin, opts.includes("BEST_OFFER")),
     price: priceObj ? money(priceObj.value, priceObj.currency) : null,
     auction,
     bids: auction ? d.bidCount ?? 0 : null,
-    buyItNow: auction && (d.buyingOptions || []).includes("FIXED_PRICE") && d.price ? money(d.price.value, d.price.currency) : null,
-    endsAt: d.itemEndDate || null,
+    buyItNow: auction && bin && d.price ? money(d.price.value, d.price.currency) : null,
+    endsAt: auction ? d.itemEndDate || null : null,
     condition: d.condition || null,
-    shipping: ship ? (Number(ship.value) === 0 ? "Free shipping" : `+${money(ship.value, ship.currency)} shipping`) : null,
-    location: loc ? [loc.city, loc.stateOrProvince, loc.country].filter(Boolean).join(", ") : null,
+    shipping: ship ? shippingText(ship.value, ship.currency) : null,
     seller: d.seller?.username || null,
     feedback: d.seller ? { pct: d.seller.feedbackPercentage, score: d.seller.feedbackScore } : null,
-    description: d.shortDescription || null,
     images: hiRes(images).slice(0, 4),
     soldOut: d.estimatedAvailabilities?.[0]?.estimatedAvailabilityStatus === "OUT_OF_STOCK",
+  };
+}
+
+function listingType(auction, bin, offer) {
+  const base = auction && bin ? "Auction + Buy It Now" : auction ? "Auction" : bin ? "Buy It Now" : null;
+  if (!base) return offer ? "Best Offer" : null;
+  return offer ? `${base} or Best Offer` : base;
+}
+
+// Buy-box markers on a listing page. fetcher/app.py computes the same thing (page_signals)
+// and passes it along as <meta name="fxebay:signals">, since it only forwards a trimmed page.
+export function pageSignals(html) {
+  const bids = html.match(/"bidCount":(\d+)/);
+  return {
+    auction: /x-bid-action/.test(html),
+    bin: /x-bin-action/.test(html),
+    offer: /x-offer-action/.test(html),
+    bidCount: bids ? Number(bids[1]) : null,
+    endDate: html.match(/"endDate":\{"value":"([^"]+)"/)?.[1] || null,
   };
 }
 
@@ -246,41 +291,59 @@ export function parseItemHtml(html, itemId) {
   const imgs = [].concat(ld?.image || meta("og:image") || []).map((i) => (typeof i === "string" ? i : i?.url)).filter(Boolean);
   const rate = [].concat(offer?.shippingDetails || [])[0]?.shippingRate;
 
+  let sig;
+  try {
+    sig = JSON.parse(meta("fxebay:signals"));
+  } catch {}
+  sig ||= pageSignals(html);
+
   return {
     id: itemId,
     url: `https://www.ebay.com/itm/${itemId}`,
-    title: title.replace(/\s*\|\s*eBay\s*$/i, ""),
+    title: decodeEntities(title).replace(/\s*\|\s*eBay\s*$/i, ""),
+    type: listingType(sig.auction, sig.bin, sig.offer),
+    // On auctions the JSON-LD price is the current bid.
     price: offer?.price ? money(offer.price, offer.priceCurrency) : null,
-    condition: offer?.itemCondition ? String(offer.itemCondition).split("/").pop().replace(/Condition$/, "") : null,
-    shipping: rate ? (Number(rate.value) === 0 ? "Free shipping" : `+${money(rate.value, rate.currency)} shipping`) : null,
+    auction: sig.auction,
+    bids: sig.auction ? sig.bidCount ?? 0 : null,
+    endsAt: sig.auction ? sig.endDate : null,
+    condition: offer?.itemCondition ? conditionName(offer.itemCondition) : null,
+    shipping: rate ? shippingText(rate.value, rate.currency) : null,
     soldOut: /OutOfStock|SoldOut/i.test(offer?.availability || ""),
-    description: meta("og:description"),
     images: hiRes(imgs).slice(0, 4),
   };
 }
 
+const CONDITIONS = { New: "New", Used: "Used", Refurbished: "Refurbished", Damaged: "For parts or not working" };
+
+function conditionName(schemaUrl) {
+  const key = String(schemaUrl).split("/").pop().replace(/Condition$/, "");
+  return CONDITIONS[key] || key;
+}
+
 // ---------- rendering ----------
 
-export function renderEmbed(item, origin) {
-  const lines = [];
-  const priceBits = [];
-  if (item.price) priceBits.push(`💲 ${item.price}`);
-  if (item.auction) priceBits.push(`🔨 ${item.bids} bid${item.bids === 1 ? "" : "s"}`);
-  if (item.buyItNow) priceBits.push(`Buy It Now ${item.buyItNow}`);
-  if (priceBits.length) lines.push(priceBits.join(" · "));
-
-  const info = [item.condition, item.shipping].filter(Boolean);
-  if (info.length) lines.push(info.join(" · "));
-  if (item.variations) lines.push(`${item.variations} variations`);
-  if (item.endsAt && item.auction) lines.push(`⏰ Ends ${new Date(item.endsAt).toUTCString().replace(":00 GMT", " UTC")}`);
-  if (item.soldOut) lines.push("❌ Out of stock");
-  if (item.location) lines.push(`📍 ${item.location}`);
-  if (item.description) {
-    if (lines.length) lines.push("");
-    lines.push(truncate(decodeEntities(item.description.replace(/<[^>]*>/g, " ")), 250));
+// Discord link embeds can't have real fields, so each "field" is a "Label: value" line.
+export function embedFields(item) {
+  const fields = [];
+  if (item.type) {
+    const extra = [];
+    if (item.auction) extra.push(`${item.bids} bid${item.bids === 1 ? "" : "s"}`);
+    if (item.auction && item.endsAt) extra.push(`ends ${formatEnd(item.endsAt)}`);
+    fields.push(["Type", extra.length ? `${item.type} (${extra.join(", ")})` : item.type]);
   }
+  if (item.condition) fields.push(["Condition", item.condition]);
+  if (item.price) fields.push([item.auction ? "Current bid" : "Price", item.price]);
+  if (item.buyItNow) fields.push(["Buy It Now", item.buyItNow]);
+  if (item.variations) fields.push(["Variations", String(item.variations)]);
+  if (item.shipping) fields.push(["Shipping", item.shipping]);
+  if (item.soldOut) fields.push(["Status", "Out of stock"]);
+  return fields;
+}
 
-  const desc = lines.join("\n");
+export function renderEmbed(item, origin) {
+  const fields = embedFields(item);
+  const desc = fields.length ? fields.map(([k, v]) => `${k}: ${v}`).join("\n") : item.note || "";
   const img = item.images?.[0];
   const author = item.seller
     ? `${item.seller}${item.feedback?.score != null ? ` (${item.feedback.score}${item.feedback.pct ? ` · ${item.feedback.pct}%` : ""})` : ""}`
@@ -346,9 +409,17 @@ function money(value, currency) {
   }
 }
 
-function truncate(s, n) {
-  s = s.replace(/\s+/g, " ").replace(/\s+([,.;:!?])/g, "$1").trim();
-  return s.length > n ? s.slice(0, n - 1).trimEnd() + "…" : s;
+function shippingText(value, currency) {
+  return Number(value) === 0 ? "Free" : money(value, currency);
+}
+
+const END_FMT = new Intl.DateTimeFormat("en-US", {
+  month: "short", day: "numeric", hour: "numeric", minute: "2-digit", timeZone: "UTC",
+});
+
+function formatEnd(iso) {
+  const d = new Date(iso);
+  return isNaN(d) ? iso : `${END_FMT.format(d)} UTC`;
 }
 
 function esc(s) {

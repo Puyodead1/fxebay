@@ -7,8 +7,10 @@ exact eBay link that was shared.
 
 ```
 https://www.ebay.com/itm/117298301199
-https://fxebay.<you>.workers.dev/itm/117298301199
+https://fxebay.puyodead1.dev/itm/117298301199
 ```
+
+Converter: <https://puyodead1.github.io/fxebay/>
 
 ## Why there are two parts
 
@@ -110,8 +112,9 @@ dashboard with the *Edit Cloudflare Workers* template), `CLOUDFLARE_ACCOUNT_ID`,
 (or uncomment the `push` trigger in the workflow to deploy on every push). Set `FETCHER_URL` / `FETCHER_TOKEN` with
 `wrangler secret put` or in the Cloudflare dashboard (Worker → Settings → Variables).
 
-Either way, you get a URL like `https://fxebay.<you>.workers.dev`. A custom domain
-works too (Workers → Settings → Domains); a short one such as `fxebay.xyz` is nicer to type.
+Either way, you get a URL like `https://fxebay.<you>.workers.dev`. For a custom domain
+on a zone in the same Cloudflare account, change the `routes` entry in `wrangler.toml`
+(or remove it to use workers.dev only); Cloudflare creates the DNS record and certificate.
 
 ### 3. GitHub Pages
 1. In `docs/index.html`, set `const WORKER = "https://fxebay.<you>.workers.dev";`

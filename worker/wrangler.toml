@@ -2,6 +2,10 @@ name = "fxebay"
 main = "src/index.js"
 compatibility_date = "2026-10-01"
 
+# Cloudflare creates the DNS record and certificate for this. workers.dev stays enabled too.
+routes = [{ pattern = "fxebay.puyodead1.dev", custom_domain = true }]
+workers_dev = true
+
 [vars]
 # Where "/" on the worker redirects to — set this to your GitHub Pages URL.
 HOME_URL = "https://puyodead1.github.io/fxebay/"

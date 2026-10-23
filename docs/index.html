@@ -1,0 +1,119 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>fxebay</title>
+<meta name="description" content="Fix eBay link embeds in Discord.">
+<meta property="og:title" content="fxebay">
+<meta property="og:description" content="Fix eBay link embeds in Discord — swap ebay.com for the fxebay domain.">
+<meta name="theme-color" content="#86b817">
+<style>
+  :root {
+    --bg: #f6f7f9; --card: #fff; --text: #16181d; --muted: #5d6470; --border: #dfe3e8;
+    --accent: #3665f3; --accent-text: #fff; --green: #86b817; --code: #eef1f5;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #111317; --card: #1a1d23; --text: #e8eaee; --muted: #9aa2ae; --border: #2c313a;
+      --accent: #5b82ff; --accent-text: #fff; --code: #23272f;
+    }
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--text);
+    font: 16px/1.55 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  }
+  main { max-width: 680px; margin: 0 auto; padding: 56px 16px 80px; }
+  h1 { font-size: 2.2rem; margin: 0 0 4px; letter-spacing: -0.02em; }
+  h1 .e { color: #e53238; } h1 .b { color: #0064d2; } h1 .a { color: #f5af02; } h1 .y { color: var(--green); }
+  .tag { color: var(--muted); margin: 0 0 32px; }
+  .card { background: var(--card); border: 1px solid var(--border); border-radius: 12px; padding: 20px; margin-bottom: 24px; }
+  label { font-weight: 600; display: block; margin-bottom: 8px; }
+  .row { display: flex; gap: 8px; flex-wrap: wrap; }
+  input {
+    flex: 1 1 260px; min-width: 0; padding: 10px 12px; font: inherit; color: var(--text);
+    background: var(--bg); border: 1px solid var(--border); border-radius: 8px;
+  }
+  input:focus { outline: 2px solid var(--accent); outline-offset: 1px; }
+  button {
+    padding: 10px 16px; font: inherit; font-weight: 600; border: 0; border-radius: 8px;
+    background: var(--accent); color: var(--accent-text); cursor: pointer;
+  }
+  button:disabled { opacity: .5; cursor: default; }
+  #out { margin-top: 14px; word-break: break-all; min-height: 1.5em; }
+  #out a { color: var(--accent); }
+  .err { color: #e53238; }
+  code { background: var(--code); padding: 2px 6px; border-radius: 5px; font-size: .92em; word-break: break-all; }
+  h2 { font-size: 1.1rem; margin: 32px 0 8px; }
+  ol, ul { padding-left: 22px; } li { margin: 4px 0; }
+  .muted { color: var(--muted); font-size: .92rem; }
+</style>
+</head>
+<body>
+<main>
+  <h1><span class="e">fx</span><span class="b">e</span><span class="a">b</span><span class="y">ay</span></h1>
+  <p class="tag">eBay links that actually embed in Discord.</p>
+
+  <div class="card">
+    <label for="link">Paste an eBay link</label>
+    <div class="row">
+      <input id="link" type="url" placeholder="https://www.ebay.com/itm/117298301199" autocomplete="off">
+      <button id="go">Convert &amp; copy</button>
+    </div>
+    <div id="out" aria-live="polite"></div>
+  </div>
+
+  <h2>Or just edit the link</h2>
+  <p>Replace <code>www.ebay.com</code> with <code id="host"></code>:</p>
+  <p><code>https://www.ebay.com/itm/117298301199</code><br>→ <code id="example"></code></p>
+  <p class="muted">Short <code>ebay.us/m/…</code> share links work too — swap <code>ebay.us</code> for the same domain.</p>
+
+  <h2>How it works</h2>
+  <ul>
+    <li>Discord's link crawler gets a page with the title, price, condition, shipping and photo.</li>
+    <li>When you click the link, you go straight to the eBay listing.</li>
+  </ul>
+</main>
+<script>
+  // Set this to your deployed Cloudflare Worker (or custom domain), no trailing slash.
+  const WORKER = "https://fxebay.puyodead1.workers.dev";
+
+  const host = WORKER.replace(/^https?:\/\//, "");
+  document.getElementById("host").textContent = host;
+  document.getElementById("example").textContent = `${WORKER}/itm/117298301199`;
+
+  const input = document.getElementById("link");
+  const out = document.getElementById("out");
+
+  function convert(raw) {
+    let u;
+    try { u = new URL(raw.trim()); } catch { return null; }
+    if (/(^|\.)ebay\.us$/i.test(u.hostname)) return WORKER + u.pathname;
+    if (!/(^|\.)ebay\.[a-z.]+$/i.test(u.hostname)) return null;
+    const id = (u.pathname.match(/\/itm\/(?:[^/]+\/)?(\d{9,15})/) || [])[1]
+      || u.searchParams.get("item") || u.searchParams.get("itemId");
+    return id ? `${WORKER}/itm/${id}` : null;
+  }
+
+  async function go() {
+    const fixed = convert(input.value);
+    if (!fixed) {
+      out.innerHTML = '<span class="err">That doesn\'t look like an eBay item link.</span>';
+      return;
+    }
+    out.innerHTML = "";
+    const a = Object.assign(document.createElement("a"), { href: fixed, textContent: fixed, target: "_blank", rel: "noopener" });
+    out.append(a);
+    try {
+      await navigator.clipboard.writeText(fixed);
+      out.append(document.createTextNode("  ✓ copied"));
+    } catch {}
+  }
+
+  document.getElementById("go").addEventListener("click", go);
+  input.addEventListener("keydown", (e) => { if (e.key === "Enter") go(); });
+  input.addEventListener("paste", () => setTimeout(go, 0));
+</script>
+</body>
+</html>

@@ -1,0 +1,26 @@
+name: Deploy worker
+
+# Manual only (Actions tab -> Deploy worker -> Run workflow). To deploy on every push,
+# add the secrets below and uncomment `push`.
+on:
+  workflow_dispatch:
+  # push:
+  #   branches: [main]
+  #   paths: ["worker/**", ".github/workflows/deploy-worker.yml"]
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: cloudflare/wrangler-action@v3
+        with:
+          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          workingDirectory: worker
+          secrets: |
+            EBAY_CLIENT_ID
+            EBAY_CLIENT_SECRET
+        env:
+          EBAY_CLIENT_ID: ${{ secrets.EBAY_CLIENT_ID }}
+          EBAY_CLIENT_SECRET: ${{ secrets.EBAY_CLIENT_SECRET }}

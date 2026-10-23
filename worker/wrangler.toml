@@ -1,0 +1,14 @@
+name = "fxebay"
+main = "src/index.js"
+compatibility_date = "2026-10-01"
+
+[vars]
+# Where "/" on the worker redirects to — set this to your GitHub Pages URL.
+HOME_URL = "https://puyodead1.github.io/fxebay/"
+EBAY_MARKETPLACE = "EBAY_US"
+
+# Secrets (set with `npx wrangler secret put <NAME>`, never commit them):
+#   EBAY_CLIENT_ID      – eBay developer "App ID (Client ID)", Production keyset
+#   EBAY_CLIENT_SECRET  – eBay developer "Cert ID (Client Secret)", Production keyset
+#   FETCHER_URL         – optional, public URL of fetcher/app.py
+#   FETCHER_TOKEN       – the FETCHER_TOKEN that fetcher runs with

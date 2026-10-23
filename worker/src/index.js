@@ -15,9 +15,7 @@ export default {
     const url = new URL(request.url);
     const path = url.pathname;
 
-    if (path === "/" || path === "") {
-      return Response.redirect(env.HOME_URL || "https://github.com", 302);
-    }
+    if (path === "/" || path === "") return homePage(env);
     if (path === "/oembed.json") return oembed(url);
     if (path === "/favicon.ico" || path === "/robots.txt") return new Response(null, { status: 404 });
 
@@ -58,6 +56,21 @@ export default {
     });
   },
 };
+
+// The converter page lives on GitHub Pages; show it here so the domain's root is the site.
+async function homePage(env) {
+  const home = env.HOME_URL || "https://github.com";
+  try {
+    const res = await fetch(home, { cf: { cacheTtl: 300, cacheEverything: true } });
+    if (!res.ok) throw new Error(`${res.status}`);
+    return new Response(res.body, {
+      headers: { "content-type": res.headers.get("content-type") || "text/html; charset=utf-8", "cache-control": "public, max-age=300" },
+    });
+  } catch (e) {
+    console.log(`home page: ${e.message}`);
+    return Response.redirect(home, 302);
+  }
+}
 
 // ---------- URL handling ----------
 

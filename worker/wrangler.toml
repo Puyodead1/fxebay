@@ -7,7 +7,7 @@ routes = [{ pattern = "fxebay.puyodead1.dev", custom_domain = true }]
 workers_dev = true
 
 [vars]
-# Where "/" on the worker redirects to — set this to your GitHub Pages URL.
+# The converter site (GitHub Pages) that "/" on the worker displays. Falls back to a redirect if it can't be fetched.
 HOME_URL = "https://puyodead1.github.io/fxebay/"
 EBAY_MARKETPLACE = "EBAY_US"
 

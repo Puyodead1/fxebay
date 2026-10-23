@@ -45,6 +45,9 @@ globalThis.fetch = async (u) => {
       ? new Response("<title>Error Page | eBay</title>", { status: 403 })
       : new Response(realHtml);
   }
+  if (u === "https://site.test/") {
+    return mode === "blocked" ? new Response("", { status: 503 }) : new Response("<title>fxebay</title>", { headers: { "content-type": "text/html; charset=utf-8" } });
+  }
   if (u.startsWith("https://fetcher.test/item/")) return new Response(pages[u.split("/").pop()] || realHtml);
   if (u.startsWith("https://fetcher.test/short/")) return json({ location: "https://www.ebay.com/itm/555555555555?mkcid=16" });
   if (u.startsWith("https://ebay.us/") && mode === "blocked") return new Response("", { status: 403 });
@@ -165,6 +168,16 @@ test("embed links back to the original link", async () => {
 test("malformed escapes don't crash", async () => {
   const { res } = await get("/itm/%E0%A4%A/117298301199");
   assert.equal(res.status, 200);
+});
+
+test("root shows the converter site, or redirects to it if unavailable", async () => {
+  const env = { HOME_URL: "https://site.test/" };
+  const ok = await get("/", { env, ua: FIREFOX });
+  assert.equal(ok.res.status, 200);
+  assert.equal(ok.body, "<title>fxebay</title>");
+  const down = await get("/", { env, ua: FIREFOX, m: "blocked" });
+  assert.equal(down.res.status, 302);
+  assert.equal(down.res.headers.get("location"), "https://site.test/");
 });
 
 test("bad path is a 400", async () => {

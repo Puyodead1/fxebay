@@ -91,8 +91,9 @@
     try { u = new URL(raw.trim()); } catch { return null; }
     if (/(^|\.)ebay\.us$/i.test(u.hostname)) return WORKER + u.pathname;
     if (!/(^|\.)ebay\.[a-z.]+$/i.test(u.hostname)) return null;
-    const id = (u.pathname.match(/\/itm\/(?:[^/]+\/)?(\d{9,15})/) || [])[1]
-      || u.searchParams.get("item") || u.searchParams.get("itemId");
+    // Keep the whole path and query so the link still opens the same variation/listing view.
+    if (/\/itm\/(?:[^/]+\/)?\d{9,15}/.test(u.pathname)) return WORKER + u.pathname + u.search;
+    const id = u.searchParams.get("item") || u.searchParams.get("itemId");
     return id ? `${WORKER}/itm/${id}` : null;
   }
 

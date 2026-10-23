@@ -21,7 +21,7 @@ generic embed. fxtwitter avoids this with a small server, and so does this proje
 | Part | Where | What it does |
 |---|---|---|
 | `worker/` | Cloudflare Workers (free plan: 100k requests/day) | Gets item data and serves embed tags to bots, redirects people to eBay |
-| `docs/` | GitHub Pages | Landing page and a "paste link → copy fixed link" converter |
+| `docs/` | GitHub Pages (also shown at the worker's root, via `HOME_URL`) | Landing page and a "paste link → copy fixed link" converter |
 | `fetcher/` | Your PC (via tunnel) or a container host. Optional | Fetches eBay pages when there's no API key |
 
 ## Where the listing data comes from

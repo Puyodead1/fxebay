@@ -1,7 +1,7 @@
 import { test, beforeEach } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
-import worker, { extractItemId } from "../src/index.js";
+import worker, { extractItemId, normalizeApiItem, renderEmbed, embedFields } from "../src/index.js";
 
 // Real eBay listing pages, trimmed by fetcher/app.py (meta tags + JSON-LD + fxebay:signals).
 const fixture = (name) => readFileSync(new URL(`./fixture-${name}.html`, import.meta.url), "utf8");
@@ -112,7 +112,8 @@ test("real auction page via fetcher", async () => {
   const { body } = await get("/itm/198718772370", { env: fetcherEnv });
   assert.match(
     meta(body, "og:description"),
-    /^Type: Auction or Best Offer \(0 bids, ends Oct 23, 4:40 AM UTC\)\nCondition: Used\nCurrent bid: \$147\.44(\n|$)/,
+    // "ends" or "ended" depending on today's date
+    /^Type: Auction or Best Offer \(0 bids, (ends|ended) Oct 23, 4:40 AM UTC\)\nCondition: Used\nCurrent bid: \$147\.44(\n|$)/,
   );
 });
 
@@ -178,6 +179,43 @@ test("root shows the converter site, or redirects to it if unavailable", async (
   const down = await get("/", { env, ua: FIREFOX, m: "blocked" });
   assert.equal(down.res.status, 302);
   assert.equal(down.res.headers.get("location"), "https://site.test/");
+});
+
+test("calculated shipping shows the cheapest option; hidden seller score is omitted", async () => {
+  const item = normalizeApiItem({
+    ...apiItem,
+    shippingOptions: [
+      { shippingCostType: "CALCULATED", shippingCost: { value: "7.78", currency: "USD" } },
+      { shippingCostType: "CALCULATED", shippingCost: { value: "7.10", currency: "USD" } },
+    ],
+    seller: { username: "hidden_guy", feedbackPercentage: "100.0", feedbackScore: -1 },
+  }, "1");
+  assert.equal(item.shipping, "from $7.10");
+  assert.match(renderEmbed(item, "https://fx.test"), /author=hidden_guy\+%28100\.0%25%29/);
+  const flat = normalizeApiItem({ ...apiItem, shippingOptions: [{ shippingCost: { value: "5", currency: "USD" } }, { shippingCost: { value: "5", currency: "USD" } }] }, "1");
+  assert.equal(flat.shipping, "$5.00");
+});
+
+test("ended auctions say ended", () => {
+  const [[, type]] = embedFields({ type: "Auction", auction: true, bids: 2, endsAt: "2020-01-02T03:04:00Z" });
+  assert.equal(type, "Auction (2 bids, ended Jan 2, 3:04 AM UTC)");
+});
+
+test("API requests send the ship-to location", async () => {
+  const seen = [];
+  const orig = globalThis.fetch;
+  globalThis.fetch = async (u, init) => { if (String(u).includes("browse")) seen.push(init?.headers?.["x-ebay-c-enduserctx"]); return orig(u, init); };
+  try {
+    await get("/itm/117298301199?zz=1", { env: { ...keys, EBAY_SHIP_TO_ZIP: "10001" } });
+  } finally {
+    globalThis.fetch = orig;
+  }
+  assert.equal(seen[0], "contextualLocation=country%3DUS%2Czip%3D10001");
+});
+
+test("BOM-prefixed API secrets still work", async () => {
+  const { body } = await get("/itm/117298301199", { env: { EBAY_CLIENT_ID: "﻿id", EBAY_CLIENT_SECRET: "﻿secret " } });
+  assert.match(meta(body, "og:title"), /^Nintendo Game Boy/);
 });
 
 test("bad path is a 400", async () => {

@@ -127,7 +127,7 @@ export function extractItemId(s) {
 async function getItem(itemId, env, ctx, origin) {
   const cache = typeof caches !== "undefined" ? caches.default : null;
   // Bump the version whenever the cached item shape changes.
-  const cacheKey = new Request(`${origin}/__cache/v2/item/${itemId}`);
+  const cacheKey = new Request(`${origin}/__cache/v3/item/${itemId}`);
   if (cache) {
     try {
       const hit = await cache.match(cacheKey);
@@ -163,7 +163,8 @@ async function getAppToken(env) {
     method: "POST",
     headers: {
       "content-type": "application/x-www-form-urlencoded",
-      authorization: "Basic " + btoa(`${env.EBAY_CLIENT_ID}:${env.EBAY_CLIENT_SECRET}`),
+      // trim(): secrets set by piping from Windows PowerShell can carry a leading BOM.
+      authorization: "Basic " + btoa(`${env.EBAY_CLIENT_ID.trim()}:${env.EBAY_CLIENT_SECRET.trim()}`),
     },
     body: "grant_type=client_credentials&scope=" + encodeURIComponent("https://api.ebay.com/oauth/api_scope"),
   });
@@ -175,12 +176,16 @@ async function getAppToken(env) {
 
 async function browse(path, env) {
   const token = await getAppToken(env);
-  return fetch(`https://api.ebay.com/buy/browse/v1/${path}`, {
-    headers: {
-      authorization: `Bearer ${token}`,
-      "x-ebay-c-marketplace-id": env.EBAY_MARKETPLACE || "EBAY_US",
-    },
-  });
+  const headers = {
+    authorization: `Bearer ${token}`,
+    "x-ebay-c-marketplace-id": env.EBAY_MARKETPLACE || "EBAY_US",
+  };
+  // Shipping costs are only returned when eBay knows where the buyer is (value must be URL-encoded).
+  if (env.EBAY_SHIP_TO_ZIP) {
+    const loc = `country=${env.EBAY_SHIP_TO_COUNTRY || "US"},zip=${env.EBAY_SHIP_TO_ZIP}`;
+    headers["x-ebay-c-enduserctx"] = `contextualLocation=${encodeURIComponent(loc)}`;
+  }
+  return fetch(`https://api.ebay.com/buy/browse/v1/${path}`, { headers });
 }
 
 async function fromBrowseApi(itemId, env) {
@@ -212,7 +217,6 @@ export function normalizeApiItem(d, itemId) {
   const auction = opts.includes("AUCTION");
   const bin = opts.includes("FIXED_PRICE");
   const priceObj = auction && d.currentBidPrice ? d.currentBidPrice : d.price;
-  const ship = d.shippingOptions?.[0]?.shippingCost;
   const images = [d.image?.imageUrl, ...(d.additionalImages || []).map((i) => i.imageUrl)].filter(Boolean);
 
   return {
@@ -226,12 +230,23 @@ export function normalizeApiItem(d, itemId) {
     buyItNow: auction && bin && d.price ? money(d.price.value, d.price.currency) : null,
     endsAt: auction ? d.itemEndDate || null : null,
     condition: d.condition || null,
-    shipping: ship ? shippingText(ship.value, ship.currency) : null,
+    shipping: apiShipping(d.shippingOptions),
     seller: d.seller?.username || null,
-    feedback: d.seller ? { pct: d.seller.feedbackPercentage, score: d.seller.feedbackScore } : null,
+    // eBay reports -1 when the seller's score is hidden.
+    feedback: d.seller ? { pct: d.seller.feedbackPercentage, score: d.seller.feedbackScore >= 0 ? d.seller.feedbackScore : null } : null,
     images: hiRes(images).slice(0, 4),
     soldOut: d.estimatedAvailabilities?.[0]?.estimatedAvailabilityStatus === "OUT_OF_STOCK",
   };
+}
+
+// Calculated shipping comes back as several services; show the cheapest.
+function apiShipping(options = []) {
+  const costs = options.map((o) => o.shippingCost).filter((c) => c && !isNaN(Number(c.value)));
+  if (!costs.length) return null;
+  const cheapest = costs.reduce((a, b) => (Number(b.value) < Number(a.value) ? b : a));
+  const text = shippingText(cheapest.value, cheapest.currency);
+  const varies = costs.some((c) => Number(c.value) !== Number(cheapest.value));
+  return varies && text !== "Free" ? `from ${text}` : text;
 }
 
 function listingType(auction, bin, offer) {
@@ -342,7 +357,9 @@ export function embedFields(item) {
   if (item.type) {
     const extra = [];
     if (item.auction) extra.push(`${item.bids} bid${item.bids === 1 ? "" : "s"}`);
-    if (item.auction && item.endsAt) extra.push(`ends ${formatEnd(item.endsAt)}`);
+    if (item.auction && item.endsAt) {
+      extra.push(`${new Date(item.endsAt) < Date.now() ? "ended" : "ends"} ${formatEnd(item.endsAt)}`);
+    }
     fields.push(["Type", extra.length ? `${item.type} (${extra.join(", ")})` : item.type]);
   }
   if (item.condition) fields.push(["Condition", item.condition]);
@@ -358,9 +375,10 @@ export function renderEmbed(item, origin) {
   const fields = embedFields(item);
   const desc = fields.length ? fields.map(([k, v]) => `${k}: ${v}`).join("\n") : item.note || "";
   const img = item.images?.[0];
-  const author = item.seller
-    ? `${item.seller}${item.feedback?.score != null ? ` (${item.feedback.score}${item.feedback.pct ? ` · ${item.feedback.pct}%` : ""})` : ""}`
-    : null;
+  const stats = [];
+  if (item.feedback?.score != null) stats.push(item.feedback.score);
+  if (item.feedback?.pct) stats.push(`${item.feedback.pct}%`);
+  const author = item.seller ? (stats.length ? `${item.seller} (${stats.join(" · ")})` : item.seller) : null;
 
   const oembedUrl = `${origin}/oembed.json?` + new URLSearchParams({
     title: item.title,

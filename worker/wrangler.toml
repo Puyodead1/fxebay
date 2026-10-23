@@ -10,6 +10,9 @@ workers_dev = true
 # The converter site (GitHub Pages) that "/" on the worker displays. Falls back to a redirect if it can't be fetched.
 HOME_URL = "https://puyodead1.github.io/fxebay/"
 EBAY_MARKETPLACE = "EBAY_US"
+# Where shipping costs are calculated to (Browse API only returns shipping with a location).
+EBAY_SHIP_TO_COUNTRY = "US"
+EBAY_SHIP_TO_ZIP = "10001"
 
 # Secrets (set with `npx wrangler secret put <NAME>`, never commit them):
 #   EBAY_CLIENT_ID      – eBay developer "App ID (Client ID)", Production keyset
